@@ -1,7 +1,9 @@
 import random
-
-from envs.deadlock import Deadlock
+from math import sqrt, log
+from envs.climbing_game import ClimbingGame
 from envs.game import CoordinationGame, ActionReport
+from envs.battle_sexes import  BattleSexes
+from envs.guess_number import GuessNumber
 from envs.simple_game import SimpleGame
 from experience_buffer import ExperienceBuffer
 import gymnasium as gym
@@ -24,14 +26,15 @@ class DQNAgent:
         self.model = self.getModel(env.observation_space, env.action_space)
         self.target_model = self.getModel(env.observation_space, env.action_space)
         self.epsilon = 1
+        self.action_count = [1] * env.action_space
         self.experience_buffer = ExperienceBuffer(64, 512)
 
     def getModel(self, env_space: tuple, action_space: int):
         model = Sequential([
             Input(shape=env_space),
-            Dense(16, activation='relu', kernel_initializer=HeUniform(42)),
-            Dense(16, activation='relu', kernel_initializer=HeUniform(42)),
-            Dense(8, activation='relu', kernel_initializer=HeUniform(42)),
+            Dense(16, activation='leaky relu', kernel_initializer=HeUniform(42)),
+            Dense(16, activation='leaky relu', kernel_initializer=HeUniform(42)),
+            Dense(8, activation='leaky relu', kernel_initializer=HeUniform(42)),
             Dense(action_space, activation='linear', kernel_initializer=HeUniform(42)),
         ])
 
@@ -60,16 +63,29 @@ class DQNAgent:
 
     def updateBuffer(self, report: ActionReport):
         self.experience_buffer.add_experience(
-            report.state,report.action, report.reward
+            report.view.state,report.action, report.reward
         )
+
+    # def sampleAction(self, state: np.ndarray):
+    #     if random.uniform(0, 1) < self.epsilon:
+    #         action = self.env.sample()
+    #         return
+    #     else:
+    #         q_values = self.model.predict(state, verbose=0)
+    #         action = np.argmax(q_values)
+    #     self.action_count[action]+=1
+    #     return action
 
     def sampleAction(self, state: np.ndarray):
         if random.uniform(0, 1) < self.epsilon:
-            return self.env.sample()
+            action = self.env.sample()
         else:
             q_values = self.model.predict(state, verbose=0)
-            return np.argmax(q_values)
+            # ucb
+            action = np.argmax(q_values + 4*np.sqrt(np.log(self.action_count)/np.array(self.action_count)))
 
+        self.action_count[action] += 1
+        return action
     def train(self) -> float:
         v_state, v_action, v_reward = self.experience_buffer.sample_batch()
 
@@ -83,7 +99,7 @@ class DQNAgent:
         return self.model.train_on_batch(v_state, y_j)[0]
 
     def decay_epsilon(self):
-        self.epsilon = 0.05 if self.epsilon * self.decay_rate < 0.05 else self.epsilon * self.decay_rate
+        self.epsilon = 0 if self.epsilon * self.decay_rate < 0.05 else self.epsilon * self.decay_rate
 
     def setTargetModel(self):
         self.target_model.set_weights(self.model.get_weights())
@@ -126,7 +142,7 @@ def train(agents: [DQNAgent], env, max_episodes: int, max_steps: int):
             print(f"Episode {episode} : Number of steps {step}, reports: {list(rewards)} ")
 
 
-env = SimpleGame(joint_action=True)
+env = GuessNumber(joint_action=True)
 train(
     [DQNAgent(env), DQNAgent(env)],
     env,
