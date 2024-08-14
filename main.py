@@ -1,8 +1,12 @@
 import random
+from datetime import datetime
 from math import sqrt, log
+
+from agents.dqn import DQNAgent
+from agents.know_dqn import KnowDQNAgent
 from envs.climbing_game import ClimbingGame
 from envs.game import CoordinationGame, ActionReport
-from envs.battle_sexes import  BattleSexes
+from envs.battle_sexes import BattleSexes
 from envs.guess_number import GuessNumber
 from envs.simple_game import SimpleGame
 from experience_buffer import ExperienceBuffer
@@ -16,119 +20,77 @@ import tensorflow as tf
 from gymnasium import Env
 
 
-class DQNAgent:
-
-    def __init__(self, env: CoordinationGame):
-        self.env = env
-        self.learning_rate = 0.9
-        self.discount_factor = 0.95
-        self.decay_rate = 0.95
-        self.model = self.getModel(env.observation_space, env.action_space)
-        self.target_model = self.getModel(env.observation_space, env.action_space)
-        self.epsilon = 1
-        self.action_count = [1] * env.action_space
-        self.experience_buffer = ExperienceBuffer(64, 512)
-
-    def getModel(self, env_space: tuple, action_space: int):
-        model = Sequential([
-            Input(shape=env_space),
-            Dense(16, activation='leaky relu', kernel_initializer=HeUniform(42)),
-            Dense(16, activation='leaky relu', kernel_initializer=HeUniform(42)),
-            Dense(8, activation='leaky relu', kernel_initializer=HeUniform(42)),
-            Dense(action_space, activation='linear', kernel_initializer=HeUniform(42)),
-        ])
-
-        optimizer = Adam(learning_rate=self.learning_rate)
-
-        model.compile(optimizer, loss='mse', metrics=['mse'])
-
-        return model
+def write_logs(step, agent: DQNAgent, reward):
+    with agent.writer.as_default():
+        tf.summary.scalar("reward", reward, step)
 
 
+def simple_moving_average(data, window_size):
+  """Calculates the simple moving average of a given data set.
 
-    def getModel(self, env_space: tuple, action_space: int):
-        model = Sequential([
-            Input(shape=env_space),
-            Dense(16, activation='relu', kernel_initializer=HeUniform(42)),
-            Dense(16, activation='relu', kernel_initializer=HeUniform(42)),
-            Dense(8, activation='relu', kernel_initializer=HeUniform(42)),
-            Dense(action_space, activation='linear', kernel_initializer=HeUniform(42)),
-        ])
+  Args:
+    data: The input data.
+    window_size: The size of the moving average window.
 
-        optimizer = Adam(learning_rate=self.learning_rate)
+  Returns:
+    A numpy array containing the calculated moving averages.
+  """
 
-        model.compile(optimizer, loss='mse', metrics=['mse'])
+  weights = np.repeat(1.0, window_size) / window_size
+  sma = np.convolve(data, weights, 'valid')
+  return sma
 
-        return model
+def write_summary_logs(agent, rewards,agent_assumptions):
+    with agent.writer.as_default():
+        max_reward = np.max(agent.env.payoff_matrix)
+        did_cordinate = []
+        for reward in rewards:
+            agent1_reward, agent2_reward = reward
+            did_cordinate.append(int(agent1_reward == max_reward or agent2_reward == max_reward))
 
-    def updateBuffer(self, report: ActionReport):
-        self.experience_buffer.add_experience(
-            report.view.state,report.action, report.reward
-        )
+        for i,sample in enumerate(simple_moving_average(did_cordinate, 20)):
+            tf.summary.scalar("Coordination Moving Avg(20)", sample, i)
 
-    # def sampleAction(self, state: np.ndarray):
-    #     if random.uniform(0, 1) < self.epsilon:
-    #         action = self.env.sample()
-    #         return
-    #     else:
-    #         q_values = self.model.predict(state, verbose=0)
-    #         action = np.argmax(q_values)
-    #     self.action_count[action]+=1
-    #     return action
+        for i,sample in enumerate(simple_moving_average(agent_assumptions, 20)):
+            tf.summary.scalar("Assumption Moving Avg(20)", sample, i)
 
-    def sampleAction(self, state: np.ndarray):
-        if random.uniform(0, 1) < self.epsilon:
-            action = self.env.sample()
-        else:
-            q_values = self.model.predict(state, verbose=0)
-            # ucb
-            action = np.argmax(q_values + 4*np.sqrt(np.log(self.action_count)/np.array(self.action_count)))
 
-        self.action_count[action] += 1
-        return action
-    def train(self) -> float:
-        v_state, v_action, v_reward = self.experience_buffer.sample_batch()
-
-        qsa = self.model.predict(v_state, verbose=0)
-        qsa_target = self.target_model.predict(v_state, verbose=0)
-
-        y_j = np.copy(qsa)
-        y_j[np.arange(y_j.shape[0]), v_action.T] = y_j[np.arange(y_j.shape[0]), v_action.T] * (
-                1 - self.learning_rate) + self.learning_rate * (v_reward.T + self.discount_factor * np.max(qsa_target,
-                                                                                                           axis=1))
-        return self.model.train_on_batch(v_state, y_j)[0]
-
-    def decay_epsilon(self):
-        self.epsilon = 0 if self.epsilon * self.decay_rate < 0.05 else self.epsilon * self.decay_rate
-
-    def setTargetModel(self):
-        self.target_model.set_weights(self.model.get_weights())
 
 
 def train(agents: [DQNAgent], env, max_episodes: int, max_steps: int):
     step_counter = 0
-    q_iteraion = 64
-    state = env.base_state()
-    for episode in range(max_episodes):
+    q_iteraion = 10
 
-        step = 0
+    global_step = 0
+    total_actions =[]
+    total_rewards = []
+    total_assumptions = []
+    for episode in range(max_episodes):
 
         for step in range(max_steps):
             # Calculate Action
+
             actions = []
+            assumptions = []
             states = []
 
             for agent in agents:
                 state = env.base_state()
                 state = np.reshape(state, [1, env.observation_space])
 
-                action = agent.sampleAction(state)
+                assumption, action = agent.sampleAction(state)
+                # state = assumption
+                assumptions.append(assumption)
                 actions.append(action)
                 states.append(state)
 
-            reports = env.step(*actions, *states)
-            rewards = map(lambda report: report.reward, reports)
+            reports = env.step(*actions, *states, *assumptions)
+            rewards = list(map(lambda report: report.reward, reports))
+            total_actions.append(actions)
+            total_rewards.append(rewards)
+            total_assumptions.append(assumptions)
             for agent, report in zip(agents, reports):
+                write_logs(global_step, agent, report.reward)
                 agent.updateBuffer(report)
                 agent.train()
                 agent.decay_epsilon()
@@ -140,14 +102,23 @@ def train(agents: [DQNAgent], env, max_episodes: int, max_steps: int):
                     agent.setTargetModel()
                 step_counter = 0
             print(f"Episode {episode} : Number of steps {step}, reports: {list(rewards)} ")
+            global_step += 1
+
+    for i,agent in enumerate(agents):
+        agent_assumptions = []
+        for action,assumption in zip(total_actions,total_assumptions):
+            agent_assumptions.append(int(action[len(agents)-i-1] == np.argmax(assumption[i])))
+        write_summary_logs(agent, total_rewards,agent_assumptions)
 
 
-env = GuessNumber(joint_action=True)
-train(
-    [DQNAgent(env), DQNAgent(env)],
-    env,
-    10,
-    100
-)
+if __name__ == '__main__':
+    env = ClimbingGame(joint_action=True)
+    log_dir = f"logs/MAS/climb/know-dqn/{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    train(
+        [KnowDQNAgent("agent1", log_dir, env), KnowDQNAgent("agent2", log_dir, env)],
+        env,
+        4,
+        50
+    )
 
 x = 0

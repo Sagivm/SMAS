@@ -5,8 +5,9 @@ from random import randrange
 class ActionReport:
     view = None
 
-    def __init__(self, state, action: int, reward: int):
+    def __init__(self, state, assumption, action: int, reward: int):
         self.state = state
+        self.assumption = assumption
         self.action = action
         self.reward = reward
 
@@ -24,14 +25,16 @@ class CoordinationGame:
     def sample(self):
         return randrange(0, self.action_space)
 
-    def step(self, a_action: int, b_action: int, a_state, b_state):
+    def step(self, a_action: int, b_action: int, a_state, b_state,a_assumption, b_assumption):
         actionReportA = ActionReport(
             a_state,
+            a_assumption,
             a_action,
             self.payoff_matrix[a_action][b_action][0]
         )
         actionReportB = ActionReport(
             b_state,
+            b_assumption,
             b_action,
             self.payoff_matrix[a_action][b_action][1]
         )
